@@ -18,18 +18,28 @@ function buildConfig(): PoolConfig {
     };
   }
 
-  // Fallback to discrete PG_* vars (matches localmcp/.env layout).
+  // Fallback to discrete vars. Accept several common naming conventions so the
+  // collector works whether you set PG_* or DATABASE_* (incl. the SBI shared set).
   return {
-    host: process.env.PG_HOST,
-    port: Number(process.env.PG_PORT ?? 5432),
-    database: process.env.PG_DATABASE,
-    user: process.env.PG_USER,
-    password: process.env.PG_PASSWORD,
+    host: pickEnv("PG_HOST", "DATABASE_HOST"),
+    port: Number(pickEnv("PG_PORT", "DATABASE_PORT") ?? 5432),
+    database: pickEnv("PG_DATABASE", "DATABASE_NAME", "DATABASE"),
+    user: pickEnv("PG_USER", "DATABASE_USER", "DATABASE_ADMIN_USERNAME"),
+    password: pickEnv("PG_PASSWORD", "DATABASE_PASSWORD", "DATABASE_ADMIN_PASSWORD"),
     ssl: sslConfig(),
     max: 3,
     connectionTimeoutMillis: 8000,
     idleTimeoutMillis: 10000,
   };
+}
+
+// Return the first non-empty value among the given env var names.
+function pickEnv(...names: string[]): string | undefined {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v && v.trim()) return v.trim();
+  }
+  return undefined;
 }
 
 function sslConfig() {
