@@ -74,7 +74,7 @@ so it can't be overridden):
 }
 ```
 
-## Test (webhook collector)
+## Test
 
 ```bash
 curl -sS -X POST https://<project>.vercel.app/api/skill-usage \
@@ -84,86 +84,4 @@ curl -sS -X POST https://<project>.vercel.app/api/skill-usage \
 
 psql "$DATABASE_URL" -c \
   "SELECT skill, app_user, event_ts FROM dreamscape.skill_usage ORDER BY id DESC LIMIT 5;"
-```
-
----
-
-# MCP connector (captures user identity)
-
-The webhook above gives **anonymous** counts. The MCP connector adds **who** — it
-authenticates each user through **Auth0** and logs their identity (email + `sub`).
-Identity comes from the OAuth token, never from the model, so it can't be spoofed.
-
-- MCP endpoint: **`/api/mcp`** (Streamable HTTP + SSE)
-- Tool exposed: **`log_skill_usage(skill)`** — the skill calls this first; the
-  server attaches the signed-in user from the token.
-- Auth: **Auth0** (tenant `sbi-pro.us.auth0.com`) via OAuth 2.1 + PKCE.
-- Protected-resource metadata: `/.well-known/oauth-protected-resource`.
-
-Rows land in the same `dreamscape.skill_usage` table with `surface='mcp-connector'`,
-`app_user=<email>`, `user_sub=<auth0 sub>`.
-
-## 1. Apply the identity migration
-
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/002_skill_usage_identity.sql
-```
-
-## 2. Configure Auth0 (one-time, in the Auth0 Dashboard)
-
-Tenant: **`sbi-pro.us.auth0.com`**.
-
-1. **Create an API** (Applications → APIs → Create API):
-   - Identifier (audience): **`https://<project>.vercel.app/api/mcp`**
-     (must match the MCP URL *exactly*, including no trailing slash mismatch).
-   - Signing alg: RS256.
-2. **Settings → General → API Authorization Settings → Default Audience** =
-   the same identifier above. (MCP clients send `resource`; Auth0 needs a default
-   audience to mint a JWT for it.)
-3. **Settings → Advanced → enable:**
-   - **Dynamic Client Registration (DCR)** — lets Claude self-register.
-   - **Resource Parameter Compatibility Profile** — makes Auth0 honor the RFC 8707
-     `resource` param as the token audience (without this you get
-     *"userinfo audience is not allowed for third party clients"*).
-4. **Authentication → Database → (your connection) → enable "Use for third-party
-   clients" / promote to domain level** — DCR-registered clients can only use
-   domain-level connections.
-5. **Email in the token (recommended):** add an Auth0 **Action** (Login flow) so the
-   access token carries the email:
-   ```js
-   exports.onExecutePostLogin = async (event, api) => {
-     api.accessToken.setCustomClaim("https://sbi.com/email", event.user.email);
-   };
-   ```
-   Then set `AUTH0_EMAIL_CLAIM=https://sbi.com/email`. (Alternatively set
-   `AUTH0_FETCH_USERINFO=true` to resolve email from `/userinfo`.)
-
-## 3. Set env vars in Vercel
-
-```
-AUTH0_ISSUER_BASE_URL = https://sbi-pro.us.auth0.com
-AUTH0_AUDIENCE        = https://<project>.vercel.app/api/mcp
-AUTH0_EMAIL_CLAIM     = https://sbi.com/email      # if you added the Action
-```
-
-## 4. Add the connector in Claude
-
-Team/Enterprise: **Admin settings → Connectors → Add custom connector** →
-URL = `https://<project>.vercel.app/api/mcp`. Each member then **Settings →
-Connectors → Connect** and logs in via Auth0 once. (If DCR is off, paste an Auth0
-app's Client ID/Secret in the connector's Advanced settings instead.)
-
-## 5. Make skills call the tool
-
-In each `SKILL.md`, instruct the model to call `log_skill_usage` (skill name) as
-its first step. The connector attaches the user automatically.
-
-## Query who used what
-
-```sql
-SELECT app_user, skill, count(*) AS uses, max(event_ts) AS last_used
-FROM dreamscape.skill_usage
-WHERE surface = 'mcp-connector'
-GROUP BY app_user, skill
-ORDER BY uses DESC;
 ```
