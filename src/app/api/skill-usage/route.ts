@@ -1,18 +1,10 @@
 import { NextResponse } from "next/server";
-import { getPool } from "@/lib/db";
+import { insertUsage } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const INGEST_TOKEN = process.env.INGEST_TOKEN?.trim();
-
-const INSERT = `
-INSERT INTO dreamscape.skill_usage
-  (event_ts, skill, tool_name, session_id, app_user, host, cwd, tool_input, raw, dedupe_key)
-VALUES
-  ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10)
-ON CONFLICT (dedupe_key) DO NOTHING
-`;
 
 export async function GET() {
   return NextResponse.json({
@@ -48,24 +40,22 @@ export async function POST(req: Request) {
   // Idempotency key: one record per (session, time, skill). Matches the schema docs.
   const dedupeKey = `${sessionId ?? ""}:${eventTs ?? ""}:${skill}`;
 
-  const values = [
-    eventTs, // $1 event_ts
-    skill, // $2 skill
-    str(event.tool_name), // $3 tool_name
-    sessionId, // $4 session_id
-    str(event.user), // $5 app_user
-    str(event.host), // $6 host
-    str(event.cwd), // $7 cwd
-    JSON.stringify(event.tool_input ?? null), // $8 tool_input
-    JSON.stringify(event), // $9 raw
-    dedupeKey, // $10 dedupe_key
-  ];
-
   try {
-    const pool = getPool();
-    const result = await pool.query(INSERT, values);
-    // rowCount === 0 means it was a duplicate (ON CONFLICT DO NOTHING).
-    return NextResponse.json({ ok: true, inserted: result.rowCount ?? 0 });
+    const inserted = await insertUsage({
+      eventTs,
+      skill,
+      toolName: str(event.tool_name),
+      sessionId,
+      appUser: str(event.user), // anonymous webhook: usually null
+      surface: str(event.surface) ?? "skill-embedded",
+      host: str(event.host),
+      cwd: str(event.cwd),
+      toolInput: event.tool_input ?? null,
+      raw: event,
+      dedupeKey,
+    });
+    // inserted === 0 means it was a duplicate (ON CONFLICT DO NOTHING).
+    return NextResponse.json({ ok: true, inserted });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: "ingest failed", detail }, { status: 500 });
