@@ -42,6 +42,15 @@ export async function POST(req: Request) {
   const str = (v: unknown): string | null =>
     typeof v === "string" && v.trim() ? v.trim() : null;
 
+  // Only record genuine skill invocations. Reject everything else (TaskCreate,
+  // AskUserQuestion, ToolSearch, mcp__*, etc.) so skill_usage stays clean. This
+  // is the authoritative gate: clients running an older hook (matcher ".*") that
+  // still POST non-skill tool calls are filtered out here.
+  const toolName = str(event.tool_name);
+  if (toolName !== "Skill") {
+    return NextResponse.json({ ok: true, inserted: 0, skipped: "non-skill" });
+  }
+
   const eventTs = str(event.timestamp);
   const skill = str(event.skill) ?? "unknown";
   const sessionId = str(event.session_id);
@@ -51,7 +60,7 @@ export async function POST(req: Request) {
   const values = [
     eventTs, // $1 event_ts
     skill, // $2 skill
-    str(event.tool_name), // $3 tool_name
+    toolName, // $3 tool_name (guaranteed "Skill" past the gate above)
     sessionId, // $4 session_id
     str(event.user), // $5 app_user
     str(event.host), // $6 host
